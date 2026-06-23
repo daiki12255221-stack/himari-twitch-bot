@@ -99,7 +99,7 @@ async function sendChatworkMessage(message) {
   }
 }
 
-// ---------------- YouTube (既存機能維持 + 空欄スキップ機能追加) ----------------
+// ---------------- YouTube (本番モード：10分以内の新着のみ、重複通知なし) ----------------
 
 async function checkYouTube(cache) {
   if (YOUTUBE_API_KEY === "ここにYouTubeのAPI_KEYを書く" || !YOUTUBE_API_KEY) {
@@ -123,14 +123,21 @@ async function checkYouTube(cache) {
   const video = data.items[0];
   const videoId = video.snippet.resourceId.videoId;
 
+  // ✨【本番用ストッパー】すでに通知済みの動画IDなら、通知せずにスルーする
+  if (cache.lastVideoId === videoId) {
+    console.log("YouTube: 既に通知済みの最新動画です");
+    currentStatusText += `\n[YouTube] 最新動画: 「${video.snippet.title}」 (既に通知済みのためスキップ)`;
+    return;
+  }
+
   const published = new Date(video.snippet.publishedAt);
   const now = new Date();
-
   const diffMinutes = (now - published) / 1000 / 60;
 
   console.log("最新動画:", video.snippet.title);
   console.log(`投稿から ${diffMinutes.toFixed(1)} 分`);
 
+  // 10分以内だけ通知
   if (diffMinutes <= 10) {
     const message =
 `🎥 新しい動画が投稿されました！
@@ -143,14 +150,15 @@ ${video.snippet.title}
     await sendLineMessage(message);
     await sendChatworkMessage(message);
     
+    // 通知した動画IDを記憶して多重通知を防ぐ
     cache.lastVideoId = videoId;
-    currentStatusText += `\n[YouTube] 新着動画を検知・通知しました！: 「${video.snippet.title}」`;
+    currentStatusText += `\n[YouTube] ✨新着動画を検知・通知しました！: 「${video.snippet.title}」`;
   } else {
     currentStatusText += `\n[YouTube] 最新動画: 「${video.snippet.title}」 (10分以上前の投稿のため通知対象外)`;
   }
 }
 
-// ---------------- Twitch (既存機能維持 + テスト用毎回通知モード) ----------------
+// ---------------- Twitch (本番モード：枠が始まった最初の1回だけ通知) ----------------
 
 async function getToken(cache) {
   const tokenRes = await fetch(
@@ -181,8 +189,16 @@ async function getToken(cache) {
     console.log("🔴 現在オンライン");
     console.log("タイトル:", stream.title);
 
+    // ✨【本番用ストッパー】前回すでにオンライン(isLiveがtrue)だったら通知しない！
+    if (cache.isLive === true) {
+      console.log("Twitch: 既に配信開始の通知は送信済みです");
+      currentStatusText = `[Twitch] 🔴現在配信中！ (既に通知済みのため、15分おきの連打をスキップしています)\nタイトル: ${stream.title}`;
+      return;
+    }
+
+    // ── オフライン ➔ オンラインになった瞬間だけここが実行される ──
     const message =
-`🔴 冥鳴ひまり 配信中！【テスト通知】
+`🔴 冥鳴ひまり 配信開始！
 
 🎮 タイトル
 ${stream.title}
@@ -195,13 +211,14 @@ ${stream.viewer_count}人
     await sendLineMessage(message);
     await sendChatworkMessage(message);
     
+    // 状態を「配信中」に書き換えて記憶する
     cache.isLive = true;
-    currentStatusText = `[Twitch] 🔴現在配信中！ (テストモード：開くたびに毎回通知を送ります)\nタイトル: ${stream.title}`;
+    currentStatusText = `[Twitch] 🔴配信開始を検知！最初の通知を送りました！\nタイトル: ${stream.title}`;
 
   } else {
     console.log("⚫ 現在オフライン");
     cache.isLive = false;
-    currentStatusText = "[Twitch] ⚫現在オフラインです (配信が始まれば開くたびに通知がきます)";
+    currentStatusText = "[Twitch] ⚫現在オフラインです (配信が始まれば最初の1回だけ通知がきます)";
   }
 }
 
@@ -220,7 +237,7 @@ async function main() {
 
 app.get('/', async (req, res) => {
   const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-  console.log(`[${nowStr}] 定期チェックアクセスを受信（テストモード）`);
+  console.log(`[${nowStr}] 定期チェックアクセスを受信`);
   
   try {
     currentStatusText = ""; 
@@ -228,14 +245,14 @@ app.get('/', async (req, res) => {
     
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.status(200).send(
-`【Bot 動作チェックログ ★テストモード中★】
+`【Bot 動作チェックログ ★本番モード運用中★】
 実行日時: ${nowStr}
 
 現在のステータス:
 --------------------------------------------
 ${currentStatusText}
 --------------------------------------------
-テストチェック完了。オンラインなら通知が飛んでいるはずです！`
+定期チェック完了。無駄な多重通知は自動でカットされています。`
     );
   } catch (error) {
     console.error("エラー発生:", error);
@@ -243,5 +260,5 @@ ${currentStatusText}
   }
 });
 
-// 🔥【Vercel対応】app.listenを削除し、Expressのインスタンスをデフォルトエクスポートします
+// 🔥 Expressのインスタンスをエクスポート
 export default app;
