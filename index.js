@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 
-// ====== 【ここにAPIキーやトークンを直接書き込んでください】 ======
+// ====== 【APIキー・トークン設定エリア】 ======
 const CLIENT_ID = "kz8uvhyodutzolak71mb0ykrfqd1c2";
 const CLIENT_SECRET = "esp1w19jvrqug8fb9wgm8gvg76tvup";
 
@@ -12,8 +12,8 @@ const LINE_USER_ID = "U273b8c7b36b2b330adda5b2458a8f446";
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
 const CHATWORK_ROOM_ID = "440046837";
 
-// YouTube APIキーが未取得（初期値のまま）ならあとでスキップするようにします
-const YOUTUBE_API_KEY = "ここにYouTubeのAPI_KEYを書く";
+// 🔑 ご提示いただいたYouTube APIキーをセットしました
+const YOUTUBE_API_KEY = "AIzaSyCbrAV6ni5-dL9oN_AO0JMkYN8ZP1Mv3jI";
 // ============================================================
 
 const UPLOADS_PLAYLIST_ID = "UUBA2EDiX5euSTM2Ic3gKqIw";
@@ -48,7 +48,7 @@ function saveCache(cache) {
   }
 }
 
-// ---------------- LINE (既存機能維持) ----------------
+// ---------------- LINE ----------------
 
 async function sendLineMessage(message) {
   const res = await fetch("https://api.line.me/v2/bot/message/push", {
@@ -69,13 +69,10 @@ async function sendLineMessage(message) {
   });
 
   console.log("LINE送信:", res.status);
-
-  if (!res.ok) {
-    console.log(await res.text());
-  }
+  if (!res.ok) console.log(await res.text());
 }
 
-// ---------------- Chatwork (既存機能維持) ----------------
+// ---------------- Chatwork ----------------
 
 async function sendChatworkMessage(message) {
   const res = await fetch(
@@ -86,20 +83,15 @@ async function sendChatworkMessage(message) {
         "X-ChatWorkToken": CHATWORK_API_TOKEN,
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams({
-        body: message,
-      }),
+      body: new URLSearchParams({ body: message }),
     }
   );
 
   console.log("Chatwork送信:", res.status);
-
-  if (!res.ok) {
-    console.log(await res.text());
-  }
+  if (!res.ok) console.log(await res.text());
 }
 
-// ---------------- YouTube (本番モード：10分以内の新着のみ、重複通知なし) ----------------
+// ---------------- YouTube (10分縛り撤廃・純粋重複ガードモード) ----------------
 
 async function checkYouTube(cache) {
   if (YOUTUBE_API_KEY === "ここにYouTubeのAPI_KEYを書く" || !YOUTUBE_API_KEY) {
@@ -123,23 +115,17 @@ async function checkYouTube(cache) {
   const video = data.items[0];
   const videoId = video.snippet.resourceId.videoId;
 
-  // ✨【本番用ストッパー】すでに通知済みの動画IDなら、通知せずにスルーする
+  // 🛡️ 【永続重複ガード】すでに通知済みの動画IDなら、何分経っていようが確実にスルーします
   if (cache.lastVideoId === videoId) {
     console.log("YouTube: 既に通知済みの最新動画です");
-    currentStatusText += `\n[YouTube] 最新動画: 「${video.snippet.title}」 (既に通知済みのためスキップ)`;
+    currentStatusText += `\n[YouTube] 最新動画: 「${video.snippet.title}」 (通知済みのため重複スキップ)`;
     return;
   }
 
-  const published = new Date(video.snippet.publishedAt);
-  const now = new Date();
-  const diffMinutes = (now - published) / 1000 / 60;
+  // ── ここに来た＝まだ通知したことのない完全な新着動画 ──
+  console.log("新着動画を検知しました:", video.snippet.title);
 
-  console.log("最新動画:", video.snippet.title);
-  console.log(`投稿から ${diffMinutes.toFixed(1)} 分`);
-
-  // 10分以内だけ通知
-  if (diffMinutes <= 10) {
-    const message =
+  const message =
 `🎥 新しい動画が投稿されました！
 
 📺 タイトル
@@ -147,25 +133,20 @@ ${video.snippet.title}
 
 🔗 https://youtu.be/${videoId}`;
 
-    await sendLineMessage(message);
-    await sendChatworkMessage(message);
-    
-    // 通知した動画IDを記憶して多重通知を防ぐ
-    cache.lastVideoId = videoId;
-    currentStatusText += `\n[YouTube] ✨新着動画を検知・通知しました！: 「${video.snippet.title}」`;
-  } else {
-    currentStatusText += `\n[YouTube] 最新動画: 「${video.snippet.title}」 (10分以上前の投稿のため通知対象外)`;
-  }
+  await sendLineMessage(message);
+  await sendChatworkMessage(message);
+  
+  // 通知した動画IDを記憶して、次回以降の重複連打を永久に防ぐ
+  cache.lastVideoId = videoId;
+  currentStatusText += `\n[YouTube] ✨未通知の新しい動画を検知！通知を送信しました: 「${video.snippet.title}」`;
 }
 
-// ---------------- Twitch (本番モード：枠が始まった最初の1回だけ通知) ----------------
+// ---------------- Twitch ----------------
 
 async function getToken(cache) {
   const tokenRes = await fetch(
     `https://id.twitch.tv/oauth2/token?client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&grant_type=client_credentials`,
-    {
-      method: "POST",
-    }
+    { method: "POST" }
   );
 
   const tokenData = await tokenRes.json();
@@ -187,16 +168,14 @@ async function getToken(cache) {
     const stream = streamData.data[0];
 
     console.log("🔴 現在オンライン");
-    console.log("タイトル:", stream.title);
-
-    // ✨【本番用ストッパー】前回すでにオンライン(isLiveがtrue)だったら通知しない！
+    
+    // 前回すでにオンライン(isLiveがtrue)だったら連打しない
     if (cache.isLive === true) {
       console.log("Twitch: 既に配信開始の通知は送信済みです");
-      currentStatusText = `[Twitch] 🔴現在配信中！ (既に通知済みのため、15分おきの連打をスキップしています)\nタイトル: ${stream.title}`;
+      currentStatusText = `[Twitch] 🔴現在配信中！ (通知済みのためスキップ中)\nタイトル: ${stream.title}`;
       return;
     }
 
-    // ── オフライン ➔ オンラインになった瞬間だけここが実行される ──
     const message =
 `🔴 冥鳴ひまり 配信開始！
 
@@ -211,7 +190,6 @@ ${stream.viewer_count}人
     await sendLineMessage(message);
     await sendChatworkMessage(message);
     
-    // 状態を「配信中」に書き換えて記憶する
     cache.isLive = true;
     currentStatusText = `[Twitch] 🔴配信開始を検知！最初の通知を送りました！\nタイトル: ${stream.title}`;
 
@@ -260,5 +238,4 @@ ${currentStatusText}
   }
 });
 
-// 🔥 Expressのインスタンスをエクスポート
 export default app;
